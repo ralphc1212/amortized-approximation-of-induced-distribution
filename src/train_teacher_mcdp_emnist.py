@@ -1,8 +1,5 @@
-import os
 import sys
-sys.path.append('/home/nandcui/projects/amt_approx_simplex')
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
+sys.path.append('~/projects/amt_approx_simplex')
 import torch.utils.data as tud
 from src.utils.model_zoo import mnist_net
 import torch.nn.functional as F

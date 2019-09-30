@@ -1,8 +1,5 @@
-import os
 import sys
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
-sys.path.append('/home/nandcui/projects/amt_approx_simplex')
+sys.path.append('~/projects/amt_approx_simplex')
 import torch
 from src.utils.model_zoo import mnist_net, mnist_net_f, mnist_net_g
 import torch.optim as optim
