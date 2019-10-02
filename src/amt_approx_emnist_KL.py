@@ -48,7 +48,8 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
 
         f_out = F.softmax(fmodel(data), dim=1)
 
-        # for easier training, the exp() function is changed to softplus, i.e., alpha0 = softplus(g)
+        # for easier training, the exp() function is changed to softplus,
+        # i.e., alpha0 = softplus(g)
         pi_q = f_out.mul(F.softplus(g_out))
 
         sum_pi_q = pi_q.sum(1)
@@ -275,6 +276,7 @@ def main():
     parser.add_argument('--test-ood-from-disk', type=int, default=1,
                         help='generate test samples or load from disk')
 
+
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -345,6 +347,7 @@ def main():
 
     print('generating teacher particles for testing&ood data ...')
     # generate particles for test and ood dataset
+    model.train()
     if args.test_ood_from_disk == 1:
         teacher_test_samples = torch.load(args.model_path + 'emnist-mcdp-test-samples.pt')
     else:

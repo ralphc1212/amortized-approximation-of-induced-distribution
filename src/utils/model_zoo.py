@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 ## the pytorch example NN for MNIST
 ## used in EMNIST experiment
@@ -63,7 +63,6 @@ class mnist_net_g(nn.Module):
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
         return x
-
 
 class mnist_mlp(nn.Module):
     def __init__(self, dropout =False, out_dim = 10):
