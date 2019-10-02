@@ -1,5 +1,7 @@
 import sys
-sys.path.append('~/projects/amt_approx_simplex')
+from pathlib import Path
+home = str(Path.home())
+sys.path.append(home+'/projects/amt_approx_simplex')
 import torch.utils.data as tud
 from src.utils.model_zoo import mnist_net
 import torch.nn.functional as F

@@ -1,5 +1,9 @@
 import sys
-sys.path.append('~/projects/amt_approx_simplex')
+from pathlib import Path
+home = str(Path.home())
+sys.path.append(home+'/projects/amt_approx_simplex')
+# import os
+# os.environ["CUDA_VISIBLE_DEVICES"]="1"
 import torch
 from src.utils.model_zoo import mnist_net, mnist_net_f, mnist_net_g
 import torch.optim as optim
@@ -84,7 +88,8 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
         f_optimizer.zero_grad()
 
         with torch.no_grad():
-            g_out = torch.exp(gmodel(data))
+            # for easier training, the exp() function is changed to softplus, i.e., alpha0 = softplus(g)
+            g_out = F.softplus(gmodel(data))
             output = output_samples[batch_idx * approx_loader.batch_size:(batch_idx + 1) * approx_loader.batch_size].to(
                 device).clamp(0.0001, 0.9999)
 
@@ -107,7 +112,7 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
 
         g_optimizer.zero_grad()
 
-        g_out = torch.exp(gmodel(data))
+        g_out = F.softplus(gmodel(data))
 
         with torch.no_grad():
             output = output_samples[batch_idx * approx_loader.batch_size:(batch_idx + 1) * approx_loader.batch_size].to(
@@ -153,7 +158,6 @@ def eval_approx(args,  smean, sconc, device, test_loader,
     with torch.no_grad():
         for data, target in test_loader:
 
-
             data, target = data.to(device), target.to(device)
             g_out = F.softplus(sconc(data))
             f_out = F.softmax(smean(data), dim=1)
@@ -166,7 +170,6 @@ def eval_approx(args,  smean, sconc, device, test_loader,
             pi_p_avg_batch = avg_origin_output
             origin_result = torch.argmax(pi_p_avg_batch, dim=1)
             approx_result = torch.argmax(pi_q, dim=1)
-
 
             miscls_approx.append((1.-(approx_result == target).float()).cpu().numpy())
             miscls_origin.append((1.-(origin_result == target).float()).cpu().numpy())

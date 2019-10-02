@@ -1,5 +1,9 @@
 import sys
-sys.path.append('~/projects/amt_approx_simplex')
+from pathlib import Path
+home = str(Path.home())
+sys.path.append(home+'/projects/amt_approx_simplex')
+# import os
+# os.environ["CUDA_VISIBLE_DEVICES"]="0"
 import torch
 from src.utils.model_zoo import mnist_net, mnist_net_f, mnist_net_g
 import torch.optim as optim
@@ -44,12 +48,12 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
 
         f_out = F.softmax(fmodel(data), dim=1)
 
+        # for easier training, the exp() function is changed to softplus, i.e., alpha0 = softplus(g)
         pi_q = f_out.mul(F.softplus(g_out))
 
         sum_pi_q = pi_q.sum(1)
         lgam_sum_pi_q = torch.lgamma(sum_pi_q)
         loss = -(lgam_sum_pi_q - torch.lgamma(pi_q).sum(1) + (pi_q-1).mul(pi_p_avg).sum(1))
-
 
         loss = loss.mean()
         loss.backward()
@@ -68,7 +72,6 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
             device).clamp(0.00001, 0.99999)
 
         pi_p_avg = torch.mean(torch.log(output), dim=1)
-
 
         with torch.no_grad():
             f_out = F.softmax(fmodel(data), dim=1)
@@ -109,7 +112,6 @@ def eval_approx(args,  smean, sconc, device, test_loader,
     batch_idx = 0
     with torch.no_grad():
         for data, target in test_loader:
-
 
             data, target = data.to(device), target.to(device)
             g_out = F.softplus(sconc(data))
