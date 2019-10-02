@@ -63,3 +63,49 @@ class mnist_net_g(nn.Module):
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
         return x
+
+
+class mnist_mlp(nn.Module):
+    def __init__(self, dropout =False, out_dim = 10):
+        super(mnist_mlp, self).__init__()
+
+        self.fc1 = nn.Linear(784, 400)
+        self.fc2 = nn.Linear(400, 400)
+        self.fc3 = nn.Linear(400, out_dim)
+        self.dropout = dropout
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        if self.dropout:
+            x = F.dropout(x, 0.4)
+        x = F.relu(self.fc2(x))
+        if self.dropout:
+            x = F.dropout(x, 0.3)
+        x = self.fc3(x)
+        return x
+
+class mnist_mlp_h(nn.Module):
+    def __init__(self, out_dim = 10):
+        super(mnist_mlp_h, self).__init__()
+        self.fc1 = nn.Linear(784, 400)
+        self.fc2 = nn.Linear(400, 400)
+        self.fc3 = nn.Linear(400, out_dim)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+class mnist_mlp_g(nn.Module):
+    def __init__(self):
+        super(mnist_mlp_g, self).__init__()
+        self.fc1 = nn.Linear(784, 400)
+        self.fc2 = nn.Linear(400, 400)
+        self.fc3 = nn.Linear(400, 1)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x

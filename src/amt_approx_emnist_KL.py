@@ -139,7 +139,7 @@ def eval_approx(args,  smean, sconc, device, test_loader,
 
             entro_approx = torch.lgamma(alpha).sum(1) \
                            - torch.lgamma(alpha0) \
-                           + (alpha0 - 10).mul(torch.digamma(alpha0)) \
+                           + (alpha0 - 47).mul(torch.digamma(alpha0)) \
                            - ((alpha - 1 ).mul(torch.digamma(alpha))).sum(1)
 
             entros_origin_1.append(entro_origin.cpu().numpy())
@@ -205,7 +205,7 @@ def eval_approx(args,  smean, sconc, device, test_loader,
 
             entro_approx = torch.lgamma(alpha).sum(1) \
                            - torch.lgamma(alpha0) \
-                           + (alpha0 - 10).mul(torch.digamma(alpha0)) \
+                           + (alpha0 - 47).mul(torch.digamma(alpha0)) \
                            - ((alpha - 1 ).mul(torch.digamma(alpha))).sum(1)
 
             entros_approx_2.append(entro_approx.cpu().numpy())
