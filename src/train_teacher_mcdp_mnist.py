@@ -103,10 +103,10 @@ def main():
         model.load_state_dict(torch.load(args.model_path+'mcdp-mnist.pt'))
     else:
         print('training teacher model ...')
-        change_points = [50, 100, 150, 200, 250]
+        schedule = [50, 100, 150, 200, 250]
         best = 0
         for epoch in range(1, args.epochs + 1):
-            if epoch == change_points:
+            if epoch in schedule:
                 for g in optimizer.param_groups:
                     g['lr'] *= 0.5
             train_bayesian(args, model, device, train_loader, optimizer, epoch)
