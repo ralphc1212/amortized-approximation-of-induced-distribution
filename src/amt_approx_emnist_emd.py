@@ -1,20 +1,46 @@
-import os
 import sys
 from pathlib import Path
 home = str(Path.home())
 sys.path.append(home+'/projects/amt_approx_simplex')
-import torch
-from src.utils.model_zoo import mnist_mlp, mnist_mlp_h, mnist_mlp_g
+from src.utils.model_zoo import mnist_net, mnist_net_f, mnist_net_g
 import torch.optim as optim
 from torch.distributions import dirichlet
+import seaborn as sns
+sns.set(color_codes=True)
 import torch.nn.functional as F
 from torchvision import datasets, transforms
 import argparse
 from sklearn.metrics import roc_auc_score, average_precision_score
-from torchvision.datasets import MNIST
+from torchvision.datasets import EMNIST
+from geomloss import SamplesLoss
+import torch
 import numpy as np
 
 num_samples = 500
+
+def cost_func(x, y):
+    x_norm = x.norm(dim=2)[:, :, None]
+    y_t = y.permute(0, 2, 1).contiguous()
+    y_norm = y.norm(dim=2)[:, None]
+
+    dist = x_norm + y_norm - 2.0 * torch.bmm(x, y_t)
+
+    return torch.clamp(dist, 0.0, np.inf)
+
+def train_bayesian(args, model, device, train_loader, optimizer, epoch):
+    model.train()
+    for batch_idx, (data, target) in enumerate(train_loader):
+        data, target = data.to(device), target.to(device)
+        data = data.view(data.shape[0], -1)
+        optimizer.zero_grad()
+        output = model(data)
+        loss = F.nll_loss(F.log_softmax(output,dim=1), target)
+        loss.backward()
+        optimizer.step()
+        # if batch_idx % args.log_interval == 0:
+        #     print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+        #         epoch, batch_idx * len(data), len(train_loader.dataset),
+        #         100. * batch_idx / len(train_loader), loss.item()))
 
 def test(args, model, device, test_loader):
     model.eval()
@@ -23,7 +49,7 @@ def test(args, model, device, test_loader):
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
-            data = data.view(data.shape[0], -1)
+            # data = data.view(data.shape[0], -1)
             output = model(data)
             test_loss += F.nll_loss(F.log_softmax(output,dim=1), target, reduction='sum').item() # sum up batch loss
             pred = output.max(1, keepdim=True)[1] # get the index of the max log-probability
@@ -35,52 +61,22 @@ def test(args, model, device, test_loader):
         100. * correct / len(test_loader.dataset)))
     return 100. * correct / len(test_loader.dataset)
 
-def polynomial(x, y, B, c, d):
-    xx, yy, zz = torch.bmm(x, x.permute(0,2,1)), \
-                 torch.bmm(y, y.permute(0,2,1)), \
-                 torch.bmm(x, y.permute(0,2,1))
 
-    K = torch.pow((xx + c), d)
-    L = torch.pow((yy + c), d)
-    P = torch.pow((zz + c), d)
-
-    beta = (1. / (B * (B - 1)))
-    gamma = (2. / (B * B))
-
-    return beta * (torch.sum(K, [1,2]) + torch.sum(L, [1,2])) - gamma * torch.sum(P, [1,2])
-
-def batch_mmd(x, y, B, alpha):
-    xx, yy, zz = torch.bmm(x, x.permute(0,2,1)), \
-                 torch.bmm(y, y.permute(0,2,1)), \
-                 torch.bmm(x, y.permute(0,2,1))
-
-    rx = (xx.diagonal(dim1=1, dim2=2).unsqueeze(1).expand_as(xx))
-    ry = (yy.diagonal(dim1=1, dim2=2).unsqueeze(1).expand_as(yy))
-
-    K = torch.exp(- alpha * (rx.permute(0,2,1) + rx - 2 * xx))
-    L = torch.exp(- alpha * (ry.permute(0,2,1) + ry - 2 * yy))
-    P = torch.exp(- alpha * (rx.permute(0,2,1) + ry - 2 * zz))
-
-    beta = (1. / (B * (B - 1)))
-    gamma = (2. / (B * B))
-
-    return beta * (torch.sum(K, [1,2]) + torch.sum(L, [1,2])) - gamma * torch.sum(P, [1,2])
+# As the previous implementation of EMD is not scalable (not suggested in the paper),
+# we provides a more scalable way using the Sinkhorn divergence which approximates EMD.
+# See https://www.kernel-operations.io/geomloss/
 
 def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_optimizer, output_samples, epoch):
     gmodel.train()
     fmodel.train()
+    LF = SamplesLoss(loss='sinkhorn', p=2, blur=0.05, backend='tensorized', cost=cost_func)
+
     for batch_idx, (data, target) in enumerate(approx_loader):
         data, target = data.to(device), target.to(device)
         f_optimizer.zero_grad()
 
-        data = data.view(data.shape[0], -1)
-
         with torch.no_grad():
-            # To be consistant with KL, the exp() function is changed to softplus,
-            # i.e., alpha0 = softplus(g).
-            # Note that, for mmd, the exp() function can be used directly for faster convergence,
-            # without tuning hyper-parameters.
-            g_out = F.softplus(gmodel(data))
+            g_out = torch.exp(gmodel(data))
             output = output_samples[batch_idx * approx_loader.batch_size:(batch_idx + 1) * approx_loader.batch_size].to(
                 device).clamp(0.0001, 0.9999)
 
@@ -88,11 +84,9 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
 
         pi = f_out.mul(g_out)
 
-        s1 = torch.distributions.Dirichlet(pi).rsample((num_samples,)).permute(1,0,2)
-
-        loss = (batch_mmd(output, s1, num_samples, 1e5)
-                + 0.5*polynomial(output, s1, num_samples, 1, 3)
-                + 0.5*polynomial(output, s1, num_samples, 1, 4)).mean()
+        s1 = torch.distributions.Dirichlet(pi).rsample((num_samples,)).permute(1,0,2).contiguous()
+        
+        loss = LF(output, s1).mean()
 
         loss.backward()
         f_optimizer.step()
@@ -103,8 +97,9 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
 
         g_optimizer.zero_grad()
 
-        g_out = F.softplus(gmodel(data))
+        g_out = torch.exp(gmodel(data))
 
+        # data = data.view(data.shape[0], -1)
         with torch.no_grad():
             output = output_samples[batch_idx * approx_loader.batch_size:(batch_idx + 1) * approx_loader.batch_size].to(
             device).clamp(0.0001, 0.9999)
@@ -113,15 +108,15 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
             f_out = F.softmax(fmodel(data), dim=1)
 
         pi = f_out.mul(g_out)
-        s1 = torch.distributions.Dirichlet(pi).rsample((num_samples,)).permute(1,0,2)
+        s1 = torch.distributions.Dirichlet(pi).rsample((num_samples,)).permute(1,0,2).contiguous()
 
-        loss = (batch_mmd(output, s1, num_samples, 1e5)
-                + 0.5*polynomial(output, s1, num_samples, 1, 3)
-                + 0.5*polynomial(output, s1, num_samples, 1, 4)).mean()
+        loss = LF(output, s1).mean()
 
+        # print(loss.item())
         loss.backward()
         g_optimizer.step()
 
+        # exit()
         if batch_idx == 0:
             print('Train Epoch: {}, Loss: {:.6f}'.format(
                 epoch, loss.item()))
@@ -284,9 +279,10 @@ def eval_approx(args,  smean, sconc, device, test_loader,
         print("AUPR  (maxp_origin):   ", average_precision_score(ood, maxp_origin))
         print("AUPR  (gvalue_approx): ", average_precision_score(ood, gvalue_approx))
 
+
 def main():
     # Training settings
-    parser = argparse.ArgumentParser(description='Amortized approximation on MNIST')
+    parser = argparse.ArgumentParser(description='run approximation to LeNet on Mnist')
     parser.add_argument('--batch-size', type=int, default=512, metavar='N',
                         help='input batch size for training (default: 64)')
     parser.add_argument('--test-batch-size', type=int, default=64, metavar='N',
@@ -303,20 +299,18 @@ def main():
                         help='random seed (default: 1)')
     parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                         help='how many batches to wait before logging training status')
-    parser.add_argument('--S', type=int, default=500, metavar='N',
+    parser.add_argument('--dropout-rate', type=float, default=0.5, metavar='p_drop',
+                        help='dropout rate')
+    parser.add_argument('--S', type=int, default=100, metavar='N',
                         help='number of posterior samples from the Bayesian model')
-    parser.add_argument('--model-path', type=str, default='../saved_models/mnist_mcdp/', metavar='N',
+    parser.add_argument('--model-path', type=str, default='../saved_models/emnist_mcdp/',
                         help='number of posterior samples from the Bayesian model')
     parser.add_argument('--save-approx-model', type=int, default=0, metavar='N',
                         help='save approx model or not? default not')
-    parser.add_argument('--from-model', type=int, default=0, metavar='N',
-                        help='if our model is loaded or trained')
     parser.add_argument('--from-approx-model', type=int, default=1, metavar='N',
                         help='if our model is loaded or trained')
     parser.add_argument('--test-ood-from-disk', type=int, default=1,
                         help='generate test samples or load from disk')
-    parser.add_argument('--ood-name', type=str, default='omniglot',
-                        help='name of the used ood dataset')
 
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
@@ -325,31 +319,25 @@ def main():
 
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    kwargs = {'num_workers': 8, 'pin_memory': True} if use_cuda else {}
+    kwargs = {'num_workers': 8, 'pin_memory': False} if use_cuda else {}
 
-    tr_data = MNIST('../data', train=True, transform=transforms.Compose([
+    tr_data = EMNIST('../../data', split='balanced', train=True, transform=transforms.Compose([
+        # transforms.ToPILImage(),
         transforms.Resize((28, 28)),
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))]), download=True)
 
-    te_data = MNIST('../data', train=False, transform=transforms.Compose([
+    te_data = EMNIST('../../data', split='balanced', train=False, transform=transforms.Compose([
+        # transforms.ToPILImage(),
         transforms.Resize((28, 28)),
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))]), download=True)
 
-    if args.ood_name == 'omniglot':
-        ood_data = datasets.Omniglot('../data', download=True, transform=transforms.Compose([
-            transforms.Resize((28, 28)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,)),
-        ]))
-    elif args.ood_name == 'SEMEION':
-        ood_data = datasets.SEMEION('../data', download=True,  transform=transforms.Compose([
-            transforms.Resize((28, 28)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,)),
-        ]))
-
+    ood_data = datasets.Omniglot('../data', download=True,  transform=transforms.Compose([
+        transforms.Resize((28, 28)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,), (0.5,)),
+    ]))
 
     train_loader = torch.utils.data.DataLoader(
         tr_data,
@@ -363,47 +351,43 @@ def main():
         ood_data,
         batch_size=args.batch_size, shuffle=False, **kwargs)
 
-    model = mnist_mlp().to(device)
+    model = mnist_net().to(device)
 
-    model.load_state_dict(torch.load(args.model_path + 'mcdp-mnist.pt'))
+    model.load_state_dict(torch.load(args.model_path + 'mcdp-emnist.pt'))
 
     test(args, model, device, test_loader)
 
     if args.from_approx_model == 0:
-        output_samples = torch.load(args.model_path + 'mnist-mcdp-samples.pt')
+        output_samples = torch.load(args.model_path + 'emnist-mcdp-samples.pt')
 
     # --------------- training approx ---------
 
-    fmodel = mnist_mlp_h().to(device)
-    gmodel = mnist_mlp_g().to(device)
+    print('approximating ...')
+    fmodel = mnist_net_f().to(device)
+    gmodel = mnist_net_g().to(device)
 
     if args.from_approx_model == 0:
-        g_optimizer = optim.SGD(gmodel.parameters(), lr=args.lr)
-        f_optimizer = optim.SGD(fmodel.parameters(), lr=args.lr)
-        g_scheduler =  optim.lr_scheduler.StepLR(g_optimizer, step_size=30, gamma=0.1)
-        f_scheduler =  optim.lr_scheduler.StepLR(f_optimizer, step_size=30, gamma=0.1)
-
+        g_optimizer = optim.SGD(gmodel.parameters(), lr=args.lr, momentum=args.momentum)
+        f_optimizer = optim.SGD(fmodel.parameters(), lr=args.lr, momentum=args.momentum)
+        
         best_acc = 0
         for epoch in range(1, args.approx_epochs + 1):
             train_approx(args, fmodel, gmodel, device, train_loader, f_optimizer, g_optimizer, output_samples, epoch)
             acc = test(args, fmodel, device, test_loader)
-            # if (args.save_approx_model == 1):
             if acc > best_acc:
-                torch.save(fmodel.state_dict(), args.model_path + 'mcdp-mnist-mmd-mean.pt')
-                torch.save(gmodel.state_dict(), args.model_path + 'mcdp-mnist-mmd-conc.pt')
+                torch.save(fmodel.state_dict(), args.model_path + 'mcdp-emnist-mean-emd.pt')
+                torch.save(gmodel.state_dict(), args.model_path + 'mcdp-emnist-conc-emd.pt')
                 best_acc = acc
-            g_scheduler.step(epoch)
-            f_scheduler.step(epoch)
-
+    
     else:
-        fmodel.load_state_dict(torch.load(args.model_path + 'mcdp-mnist-mmd-mean.pt'))
-        gmodel.load_state_dict(torch.load(args.model_path + 'mcdp-mnist-mmd-conc.pt'))
+        fmodel.load_state_dict(torch.load(args.model_path + 'mcdp-emnist-mean-emd.pt'))
+        gmodel.load_state_dict(torch.load(args.model_path + 'mcdp-emnist-conc-emd.pt'))
 
     print('generating teacher particles for testing&ood data ...')
     # generate particles for test and ood dataset
     model.train()
     if args.test_ood_from_disk == 1:
-        teacher_test_samples = torch.load(args.model_path + 'mnist-mcdp-test-samples.pt')
+        teacher_test_samples = torch.load(args.model_path + 'emnist-mcdp-test-samples.pt')
     else:
         with torch.no_grad():
             # obtain ensemble outputs
@@ -412,18 +396,16 @@ def main():
                 samples_a_round = []
                 for data, target in test_loader:
                     data = data.to(device)
-                    data = data.view(data.shape[0], -1)
                     output = F.softmax(model(data))
                     samples_a_round.append(output)
                 samples_a_round = torch.cat(samples_a_round).cpu()
                 all_samples.append(samples_a_round)
-            all_samples = torch.stack(all_samples).permute(1,0,2)
+            teacher_test_samples = torch.stack(all_samples).permute(1,0,2)
 
-            torch.save(all_samples, args.model_path + 'mnist-mcdp-test-samples.pt')
-            teacher_test_samples = all_samples
+            torch.save(all_samples, args.model_path + 'emnist-mcdp-test-samples.pt')
 
     if args.test_ood_from_disk == 1:
-        teacher_ood_samples = torch.load(args.model_path + args.ood_name + '-mcdp-ood-samples-trd-mnist.pt')
+        teacher_ood_samples = torch.load(args.model_path + 'omniglot-mcdp-ood-samples-trd-emnist.pt')
     else:
         with torch.no_grad():
             # obtain ensemble outputs
@@ -432,17 +414,14 @@ def main():
                 samples_a_round = []
                 for data, target in ood_loader:
                     data = data.to(device)
-                    data = data.view(data.shape[0], -1)
                     output = F.softmax(model(data))
                     samples_a_round.append(output)
                 samples_a_round = torch.cat(samples_a_round).cpu()
                 all_samples.append(samples_a_round)
-            all_samples = torch.stack(all_samples).permute(1,0,2)
+            teacher_ood_samples = torch.stack(all_samples).permute(1,0,2)
 
-            torch.save(all_samples, args.model_path + args.ood_name + '-mcdp-ood-samples-trd-mnist.pt')
-            teacher_ood_samples = all_samples
+            torch.save(all_samples, args.model_path + 'omniglot-mcdp-ood-samples-trd-emnist.pt')
 
-    # fitting individual Dirichlet is not in the sample code as it's time-consuming
     eval_approx(args, fmodel, gmodel, device, test_loader, ood_loader, teacher_test_samples, teacher_ood_samples)
 
 if __name__ == '__main__':

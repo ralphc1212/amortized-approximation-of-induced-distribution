@@ -2,8 +2,6 @@ import sys
 from pathlib import Path
 home = str(Path.home())
 sys.path.append(home+'/projects/amt_approx_simplex')
-import os
-os.environ["CUDA_VISIBLE_DEVICES"]="1"
 import torch
 from src.utils.model_zoo import mnist_net, mnist_net_f, mnist_net_g
 import torch.optim as optim
@@ -60,7 +58,7 @@ def polynomial(x, y, B, c, d):
     beta = (1. / (B * (B - 1)))
     gamma = (2. / (B * B))
 
-    return beta * (torch.sum(K) + torch.sum(L)) - gamma * torch.sum(P)
+    return beta * (torch.sum(K, [1, 2]) + torch.sum(L, [1, 2])) - gamma * torch.sum(P, [1, 2])
 
 def batch_mmd(x, y, B, alpha):
     # calculate mmd with RBF kernel in batch
@@ -103,8 +101,8 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
         s1 = torch.distributions.Dirichlet(pi).rsample((num_samples,)).permute(1,0,2)
 
         loss = (batch_mmd(output, s1, num_samples, 1e5)
-                + 1e-2*polynomial(output, s1, num_samples, 0, 3)
-                + 1e-3*polynomial(output, s1, num_samples, 0, 4)).mean()
+                + 0.5*polynomial(output, s1, num_samples, 1, 3)
+                + 0.5*polynomial(output, s1, num_samples, 1, 4)).mean()
 
         loss.backward()
         f_optimizer.step()
@@ -128,8 +126,8 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
         s1 = torch.distributions.Dirichlet(pi).rsample((num_samples,)).permute(1,0,2)
 
         loss = (batch_mmd(output, s1, num_samples, 1e5)
-                + 1e-2*polynomial(output, s1, num_samples, 0, 3)
-                + 1e-3*polynomial(output, s1, num_samples, 0, 4)).mean()
+                + 0.5*polynomial(output, s1, num_samples, 1, 3)
+                + 0.5*polynomial(output, s1, num_samples, 1, 4)).mean()
 
         loss.backward()
         g_optimizer.step()
@@ -300,8 +298,6 @@ def main():
                         help='input batch size for training (default: 64)')
     parser.add_argument('--test-batch-size', type=int, default=64, metavar='N',
                         help='input batch size for testing (default: 1000)')
-    parser.add_argument('--epochs', type=int, default=10, metavar='N',
-                        help='number of epochs to train (default: 10)')
     parser.add_argument('--approx-epochs', type=int, default=200, metavar='N',
                         help='number of epochs to approx (default: 10)')
     parser.add_argument('--lr', type=float, default=1e-2, metavar='LR',
@@ -327,7 +323,6 @@ def main():
     parser.add_argument('--test-ood-from-disk', type=int, default=1,
                         help='generate test samples or load from disk')
 
-
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -335,7 +330,7 @@ def main():
 
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    kwargs = {'num_workers': 9, 'pin_memory': False} if use_cuda else {}
+    kwargs = {'num_workers': 8, 'pin_memory': False} if use_cuda else {}
 
     tr_data = EMNIST('../data', split='balanced', train=True, transform=transforms.Compose([
         transforms.Resize((28, 28)),

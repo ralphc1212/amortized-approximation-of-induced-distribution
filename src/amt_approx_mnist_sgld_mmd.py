@@ -53,7 +53,7 @@ def polynomial(x, y, B, c, d):
     beta = (1. / (B * (B - 1)))
     gamma = (2. / (B * B))
 
-    return beta * (torch.sum(K) + torch.sum(L)) - gamma * torch.sum(P)
+    return beta * (torch.sum(K, [1, 2]) + torch.sum(L, [1, 2])) - gamma * torch.sum(P, [1, 2])
 
 def batch_mmd(x, y, B, alpha):
     xx, yy, zz = torch.bmm(x, x.permute(0,2,1)), \

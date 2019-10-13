@@ -12,9 +12,20 @@ from torchvision import datasets, transforms
 import argparse
 from sklearn.metrics import roc_auc_score, average_precision_score
 from torchvision.datasets import MNIST
+from geomloss import SamplesLoss
+import torch
 import numpy as np
 
 num_samples = 500
+
+def cost_func(x, y):
+    x_norm = x.norm(dim=2)[:, :, None]
+    y_t = y.permute(0, 2, 1).contiguous()
+    y_norm = y.norm(dim=2)[:, None]
+
+    dist = x_norm + y_norm - 2.0 * torch.bmm(x, y_t)
+
+    return torch.clamp(dist, 0.0, np.inf)
 
 def test(args, model, device, test_loader):
     model.eval()
@@ -35,52 +46,22 @@ def test(args, model, device, test_loader):
         100. * correct / len(test_loader.dataset)))
     return 100. * correct / len(test_loader.dataset)
 
-def polynomial(x, y, B, c, d):
-    xx, yy, zz = torch.bmm(x, x.permute(0,2,1)), \
-                 torch.bmm(y, y.permute(0,2,1)), \
-                 torch.bmm(x, y.permute(0,2,1))
 
-    K = torch.pow((xx + c), d)
-    L = torch.pow((yy + c), d)
-    P = torch.pow((zz + c), d)
-
-    beta = (1. / (B * (B - 1)))
-    gamma = (2. / (B * B))
-
-    return beta * (torch.sum(K, [1,2]) + torch.sum(L, [1,2])) - gamma * torch.sum(P, [1,2])
-
-def batch_mmd(x, y, B, alpha):
-    xx, yy, zz = torch.bmm(x, x.permute(0,2,1)), \
-                 torch.bmm(y, y.permute(0,2,1)), \
-                 torch.bmm(x, y.permute(0,2,1))
-
-    rx = (xx.diagonal(dim1=1, dim2=2).unsqueeze(1).expand_as(xx))
-    ry = (yy.diagonal(dim1=1, dim2=2).unsqueeze(1).expand_as(yy))
-
-    K = torch.exp(- alpha * (rx.permute(0,2,1) + rx - 2 * xx))
-    L = torch.exp(- alpha * (ry.permute(0,2,1) + ry - 2 * yy))
-    P = torch.exp(- alpha * (rx.permute(0,2,1) + ry - 2 * zz))
-
-    beta = (1. / (B * (B - 1)))
-    gamma = (2. / (B * B))
-
-    return beta * (torch.sum(K, [1,2]) + torch.sum(L, [1,2])) - gamma * torch.sum(P, [1,2])
+# As the previous implementation of EMD is not scalable (not suggested in the paper),
+# we provides a more scalable way using the Sinkhorn divergence which approximates EMD.
+# See https://www.kernel-operations.io/geomloss/
 
 def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_optimizer, output_samples, epoch):
     gmodel.train()
     fmodel.train()
+    LF = SamplesLoss(loss='sinkhorn', p=2, blur=0.05, backend='tensorized', cost=cost_func)
+
     for batch_idx, (data, target) in enumerate(approx_loader):
         data, target = data.to(device), target.to(device)
         f_optimizer.zero_grad()
 
-        data = data.view(data.shape[0], -1)
-
         with torch.no_grad():
-            # To be consistant with KL, the exp() function is changed to softplus,
-            # i.e., alpha0 = softplus(g).
-            # Note that, for mmd, the exp() function can be used directly for faster convergence,
-            # without tuning hyper-parameters.
-            g_out = F.softplus(gmodel(data))
+            g_out = torch.exp(gmodel(data))
             output = output_samples[batch_idx * approx_loader.batch_size:(batch_idx + 1) * approx_loader.batch_size].to(
                 device).clamp(0.0001, 0.9999)
 
@@ -88,11 +69,9 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
 
         pi = f_out.mul(g_out)
 
-        s1 = torch.distributions.Dirichlet(pi).rsample((num_samples,)).permute(1,0,2)
+        s1 = torch.distributions.Dirichlet(pi).rsample((num_samples,)).permute(1, 0, 2).contiguous()
 
-        loss = (batch_mmd(output, s1, num_samples, 1e5)
-                + 0.5*polynomial(output, s1, num_samples, 1, 3)
-                + 0.5*polynomial(output, s1, num_samples, 1, 4)).mean()
+        loss = LF(output, s1).mean()
 
         loss.backward()
         f_optimizer.step()
@@ -103,22 +82,22 @@ def train_approx(args, fmodel, gmodel, device, approx_loader, f_optimizer, g_opt
 
         g_optimizer.zero_grad()
 
-        g_out = F.softplus(gmodel(data))
+        g_out = torch.exp(gmodel(data))
 
+        # data = data.view(data.shape[0], -1)
         with torch.no_grad():
             output = output_samples[batch_idx * approx_loader.batch_size:(batch_idx + 1) * approx_loader.batch_size].to(
-            device).clamp(0.0001, 0.9999)
+                device).clamp(0.0001, 0.9999)
 
         with torch.no_grad():
             f_out = F.softmax(fmodel(data), dim=1)
 
         pi = f_out.mul(g_out)
-        s1 = torch.distributions.Dirichlet(pi).rsample((num_samples,)).permute(1,0,2)
+        s1 = torch.distributions.Dirichlet(pi).rsample((num_samples,)).permute(1, 0, 2).contiguous()
 
-        loss = (batch_mmd(output, s1, num_samples, 1e5)
-                + 0.5*polynomial(output, s1, num_samples, 1, 3)
-                + 0.5*polynomial(output, s1, num_samples, 1, 4)).mean()
+        loss = LF(output, s1).mean()
 
+        # print(loss.item())
         loss.backward()
         g_optimizer.step()
 
@@ -350,7 +329,6 @@ def main():
             transforms.Normalize((0.5,), (0.5,)),
         ]))
 
-
     train_loader = torch.utils.data.DataLoader(
         tr_data,
         batch_size=args.batch_size, shuffle=False, **kwargs)
@@ -389,15 +367,15 @@ def main():
             acc = test(args, fmodel, device, test_loader)
             # if (args.save_approx_model == 1):
             if acc > best_acc:
-                torch.save(fmodel.state_dict(), args.model_path + 'mcdp-mnist-mmd-mean.pt')
-                torch.save(gmodel.state_dict(), args.model_path + 'mcdp-mnist-mmd-conc.pt')
+                torch.save(fmodel.state_dict(), args.model_path + 'mcdp-mnist-emd-mean.pt')
+                torch.save(gmodel.state_dict(), args.model_path + 'mcdp-mnist-emd-conc.pt')
                 best_acc = acc
             g_scheduler.step(epoch)
             f_scheduler.step(epoch)
 
     else:
-        fmodel.load_state_dict(torch.load(args.model_path + 'mcdp-mnist-mmd-mean.pt'))
-        gmodel.load_state_dict(torch.load(args.model_path + 'mcdp-mnist-mmd-conc.pt'))
+        fmodel.load_state_dict(torch.load(args.model_path + 'mcdp-mnist-emd-mean.pt'))
+        gmodel.load_state_dict(torch.load(args.model_path + 'mcdp-mnist-emd-conc.pt'))
 
     print('generating teacher particles for testing&ood data ...')
     # generate particles for test and ood dataset
